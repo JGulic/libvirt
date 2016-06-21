@@ -1831,26 +1831,32 @@ virStoragePoolObjAssignDef(virStoragePoolObjListPtr pools,
     return pool;
 }
 
-static virStoragePoolObjPtr
+virStoragePoolObjPtr
 virStoragePoolObjLoad(virStoragePoolObjListPtr pools,
-                      const char *file,
-                      const char *path,
-                      const char *autostartLink)
+                      const char *configDir,
+                      const char *autostartLink,
+                      const char *name)
 {
+    char *configFile = NULL;
     virStoragePoolDefPtr def;
     virStoragePoolObjPtr pool;
 
-    if (!(def = virStoragePoolDefParseFile(path)))
-        return NULL;
+    if ((configFile = virStorageConfigFile(configDir, name)) == NULL)
+        goto error;
 
+    /*
     if (!virFileMatchesNameSuffix(file, def->name, ".xml")) {
         virReportError(VIR_ERR_XML_ERROR,
                        _("Storage pool config filename '%s' does "
                          "not match pool name '%s'"),
-                       path, def->name);
+                       configFile, def->name);
         virStoragePoolDefFree(def);
         return NULL;
-    }
+    }*/
+
+    if (!(def = virStoragePoolDefParseFile(configFile)))
+        goto error;
+
 
     if (!(pool = virStoragePoolObjAssignDef(pools, def))) {
         virStoragePoolDefFree(def);
@@ -1858,10 +1864,11 @@ virStoragePoolObjLoad(virStoragePoolObjListPtr pools,
     }
 
     VIR_FREE(pool->configFile);  /* for driver reload */
+    /*
     if (VIR_STRDUP(pool->configFile, path) < 0) {
         virStoragePoolObjRemove(pools, pool);
         return NULL;
-    }
+    }*/
     VIR_FREE(pool->autostartLink); /* for driver reload */
     if (VIR_STRDUP(pool->autostartLink, autostartLink) < 0) {
         virStoragePoolObjRemove(pools, pool);
@@ -1872,6 +1879,11 @@ virStoragePoolObjLoad(virStoragePoolObjListPtr pools,
                                           pool->configFile);
 
     return pool;
+
+ error:
+    VIR_FREE(configFile);
+    virStoragePoolDefFree(def);
+    return NULL;
 }
 
 
@@ -1987,31 +1999,20 @@ virStoragePoolLoadAllConfigs(virStoragePoolObjListPtr pools,
     }
 
     while ((ret = virDirRead(dir, &entry, configDir)) > 0) {
-        char *path;
         char *autostartLink;
         virStoragePoolObjPtr pool;
 
         if (entry->d_name[0] == '.')
             continue;
 
-        if (!virFileHasSuffix(entry->d_name, ".xml"))
+        if (!virFileStripSuffix(entry->d_name, ".xml"))
             continue;
 
-        if (!(path = virFileBuildPath(configDir, entry->d_name, NULL)))
-            continue;
-
-        if (!(autostartLink = virFileBuildPath(autostartDir, entry->d_name,
-                                               NULL))) {
-            VIR_FREE(path);
-            continue;
-        }
-
-        pool = virStoragePoolObjLoad(pools, entry->d_name, path,
-                                     autostartLink);
+        pool = virStoragePoolObjLoad(pools, configDir,
+                                     autostartDir, entry->d_name);
         if (pool)
             virStoragePoolObjUnlock(pool);
 
-        VIR_FREE(path);
         VIR_FREE(autostartLink);
     }
 
@@ -2020,18 +2021,31 @@ virStoragePoolLoadAllConfigs(virStoragePoolObjListPtr pools,
 }
 
 
-static int virStoragePoolSaveXML(const char *path,
-                                 virStoragePoolDefPtr def,
-                                 const char *xml)
+int virStoragePoolSaveXML(const char *configDir,
+                          virStoragePoolDefPtr def,
+                          const char *xml)
 {
     char uuidstr[VIR_UUID_STRING_BUFLEN];
+    char *configFile = NULL;
     int ret = -1;
 
+    if ((configFile = virStorageConfigFile(configDir, def->name)) == NULL)
+        goto cleanup;
+
+    if (virFileMakePath(configDir) < 0) {
+        virReportSystemError(errno,
+                             _("cannot create config directory '%s'"),
+                             configDir);
+        goto cleanup;
+    }
+
     virUUIDFormat(def->uuid, uuidstr);
-    ret = virXMLSaveFile(path,
+    ret = virXMLSaveFile(configFile,
                          virXMLPickShellSafeComment(def->name, uuidstr),
                          "pool-edit", xml);
 
+ cleanup:
+    VIR_FREE(configFile);
     return ret;
 }
 
@@ -2071,7 +2085,7 @@ virStoragePoolSaveState(const char *stateFile,
 
 
 int
-virStoragePoolSaveConfig(const char *configFile,
+virStoragePoolSaveConfig(const char *configDir,
                          virStoragePoolDefPtr def)
 {
     char *xml;
@@ -2083,12 +2097,21 @@ virStoragePoolSaveConfig(const char *configFile,
         return -1;
     }
 
-    if (virStoragePoolSaveXML(configFile, def, xml))
+    if (virStoragePoolSaveXML(configDir, def, xml))
         goto cleanup;
 
     ret = 0;
  cleanup:
     VIR_FREE(xml);
+    return ret;
+}
+
+char *virStorageConfigFile(const char *dir,
+                           const char *name)
+{
+    char *ret = NULL;
+
+    ignore_value(virAsprintf(&ret, "%s/%s.xml", dir, name));
     return ret;
 }
 

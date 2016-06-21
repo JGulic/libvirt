@@ -32,6 +32,7 @@
 # include "device_conf.h"
 # include "node_device_conf.h"
 # include "object_event.h"
+# include "virhash.h"
 
 # include <libxml/tree.h>
 
@@ -331,6 +332,11 @@ virStoragePoolLoadState(virStoragePoolObjListPtr pools,
                         const char *stateDir,
                         const char *name);
 virStoragePoolObjPtr
+virStoragePoolObjLoad(virStoragePoolObjListPtr pools,
+                      const char *configDir,
+                      const char *autostartLink,
+                      const char *name);
+virStoragePoolObjPtr
 virStoragePoolObjFindByUUID(virStoragePoolObjListPtr pools,
                             const unsigned char *uuid);
 virStoragePoolObjPtr
@@ -384,10 +390,15 @@ virStoragePoolObjPtr
 virStoragePoolObjAssignDef(virStoragePoolObjListPtr pools,
                            virStoragePoolDefPtr def);
 
+int virStoragePoolSaveXML(const char *configDir,
+                          virStoragePoolDefPtr def,
+                          const char *xml);
 int virStoragePoolSaveState(const char *stateFile,
                             virStoragePoolDefPtr def);
 int virStoragePoolSaveConfig(const char *configFile,
                              virStoragePoolDefPtr def);
+char *virStorageConfigFile(const char *dir,
+                           const char *name);
 int virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
                              virStoragePoolObjPtr pool,
                              virStoragePoolDefPtr def);
