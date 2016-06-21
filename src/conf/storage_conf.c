@@ -1834,54 +1834,49 @@ virStoragePoolObjAssignDef(virStoragePoolObjListPtr pools,
 virStoragePoolObjPtr
 virStoragePoolObjLoad(virStoragePoolObjListPtr pools,
                       const char *configDir,
-                      const char *autostartLink,
+                      const char *autostartDir,
                       const char *name)
 {
-    char *configFile = NULL;
-    virStoragePoolDefPtr def;
+    char *configFile = NULL, *autostartLink = NULL;
+    virStoragePoolDefPtr def = NULL;
     virStoragePoolObjPtr pool;
+    int autostart;
 
     if ((configFile = virStorageConfigFile(configDir, name)) == NULL)
         goto error;
 
-    /*
-    if (!virFileMatchesNameSuffix(file, def->name, ".xml")) {
-        virReportError(VIR_ERR_XML_ERROR,
-                       _("Storage pool config filename '%s' does "
-                         "not match pool name '%s'"),
-                       configFile, def->name);
-        virStoragePoolDefFree(def);
-        return NULL;
-    }*/
+    if ((autostartLink = virStorageConfigFile(autostartDir, name)) == NULL)
+        goto error;
+
+    if ((autostart = virFileLinkPointsTo(autostartLink, configFile)) < 0)
+        goto error;
 
     if (!(def = virStoragePoolDefParseFile(configFile)))
         goto error;
 
-
-    if (!(pool = virStoragePoolObjAssignDef(pools, def))) {
-        virStoragePoolDefFree(def);
-        return NULL;
+    if (STRNEQ(name, def->name)) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Network config filename '%s'"
+                         " does not match network name '%s'"),
+                       configFile, def->name);
+        goto error;
     }
 
-    VIR_FREE(pool->configFile);  /* for driver reload */
-    /*
-    if (VIR_STRDUP(pool->configFile, path) < 0) {
-        virStoragePoolObjRemove(pools, pool);
-        return NULL;
-    }*/
-    VIR_FREE(pool->autostartLink); /* for driver reload */
-    if (VIR_STRDUP(pool->autostartLink, autostartLink) < 0) {
-        virStoragePoolObjRemove(pools, pool);
-        return NULL;
-    }
+    virStoragePoolSaveConfig(configDir, def);
 
-    pool->autostart = virFileLinkPointsTo(pool->autostartLink,
-                                          pool->configFile);
+    if (!(pool = virStoragePoolObjAssignDef(pools, def)))
+        goto error;
+
+    pool->autostart = autostart;
+
+    VIR_FREE(configFile);
+    VIR_FREE(autostartLink);
 
     return pool;
 
  error:
     VIR_FREE(configFile);
+    VIR_FREE(autostartLink);
     virStoragePoolDefFree(def);
     return NULL;
 }
@@ -2144,22 +2139,36 @@ virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
 }
 
 int
-virStoragePoolObjDeleteDef(virStoragePoolObjPtr pool)
+virStoragePoolObjDeleteDef(const char *configDir,
+                           const char *autostartDir,
+                           virStoragePoolObjPtr pool)
 {
-    if (!pool->configFile) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("no config file for %s"), pool->def->name);
-        return -1;
+    char *configFile = NULL;
+    char *autostartLink = NULL;
+    int ret = -1;
+
+    if ((configFile = virStorageConfigFile(configDir, pool->def->name)) == NULL)
+        goto error;
+    if ((autostartLink = virStorageConfigFile(autostartDir, pool->def->name)) == NULL)
+        goto error;
+
+    /* Not fatal if this doesn't work */
+    unlink(autostartLink);
+    pool->autostart = 0;
+
+    if (unlink(configFile) < 0) {
+        virReportSystemError(errno,
+                             _("cannot remove config file '%s'"),
+                             configFile);
+        goto error;
     }
 
-    if (unlink(pool->configFile) < 0) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("cannot remove config for %s"),
-                       pool->def->name);
-        return -1;
-    }
+    ret = 0;
 
-    return 0;
+ error:
+    VIR_FREE(configFile);
+    VIR_FREE(autostartLink);
+    return ret;
 }
 
 virStoragePoolSourcePtr

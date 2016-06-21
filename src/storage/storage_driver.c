@@ -795,12 +795,16 @@ storagePoolDefineXML(virConnectPtr conn,
     if (!(pool = virStoragePoolObjAssignDef(&driver->pools, def)))
         goto cleanup;
 
+    if (virStoragePoolSaveConfig(driver->configDir, def) < 0) {
+        goto cleanup;
+    }
+    /*
     if (virStoragePoolObjSaveDef(driver, pool, def) < 0) {
         virStoragePoolObjRemove(&driver->pools, pool);
         def = NULL;
         pool = NULL;
         goto cleanup;
-    }
+    }*/
 
     event = virStoragePoolEventLifecycleNew(def->name, def->uuid,
                                             VIR_STORAGE_POOL_EVENT_DEFINED,
@@ -856,19 +860,21 @@ storagePoolUndefine(virStoragePoolPtr obj)
         goto cleanup;
     }
 
-    if (virStoragePoolObjDeleteDef(pool) < 0)
+    if (virStoragePoolObjDeleteDef(driver->configDir,
+                                   driver->autostartDir,
+                                   pool) < 0)
         goto cleanup;
-
+    /*
     if (unlink(pool->autostartLink) < 0 &&
         errno != ENOENT &&
         errno != ENOTDIR) {
         char ebuf[1024];
         VIR_ERROR(_("Failed to delete autostart link '%s': %s"),
                   pool->autostartLink, virStrerror(errno, ebuf, sizeof(ebuf)));
-    }
+    }*/
 
     VIR_FREE(pool->configFile);
-    VIR_FREE(pool->autostartLink);
+    /*VIR_FREE(pool->autostartLink);*/
 
     event = virStoragePoolEventLifecycleNew(pool->def->name,
                                             pool->def->uuid,

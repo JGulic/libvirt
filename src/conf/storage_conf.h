@@ -293,6 +293,7 @@ struct _virStorageDriverState {
     virMutex lock;
 
     virStoragePoolObjList pools;
+    virStoragePoolObjListPtr spools;
 
     char *configDir;
     char *autostartDir;
@@ -402,8 +403,9 @@ char *virStorageConfigFile(const char *dir,
 int virStoragePoolObjSaveDef(virStorageDriverStatePtr driver,
                              virStoragePoolObjPtr pool,
                              virStoragePoolDefPtr def);
-int virStoragePoolObjDeleteDef(virStoragePoolObjPtr pool);
-
+int virStoragePoolObjDeleteDef(const char *configDir,
+                               const char *autostartDir,
+                               virStoragePoolObjPtr pool);
 void virStorageVolDefFree(virStorageVolDefPtr def);
 void virStoragePoolSourceClear(virStoragePoolSourcePtr source);
 void virStoragePoolSourceDeviceClear(virStoragePoolSourceDevicePtr dev);
