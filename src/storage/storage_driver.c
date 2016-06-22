@@ -77,6 +77,23 @@ static void storageDriverUnlock(void)
 }
 
 static void
+storagePoolSetInactive(virStoragePoolObjPtr *poolptr)
+{
+    virStoragePoolObjPtr pool = *poolptr;
+
+    pool->active = false;
+
+    if (pool->configFile == NULL) {
+        virStoragePoolObjRemove(&driver->pools, pool);
+        *poolptr = NULL;
+    } else if (pool->newDef) {
+        virStoragePoolDefFree(pool->def);
+        pool->def = pool->newDef;
+        pool->newDef = NULL;
+    }
+}
+
+static void
 storagePoolUpdateState(virStoragePoolObjPtr pool)
 {
     bool active;
@@ -115,16 +132,19 @@ storagePoolUpdateState(virStoragePoolObjPtr pool)
         if (backend->refreshPool(NULL, pool) < 0) {
             if (backend->stopPool)
                 backend->stopPool(NULL, pool);
+            active = false;
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("Failed to restart storage pool '%s': %s"),
                            pool->def->name, virGetLastErrorMessage());
             goto error;
         }
+        active = true;
     }
 
-    pool->active = active;
     ret = 0;
  error:
+    if (!active)
+        storagePoolSetInactive(&pool);
     if (ret < 0) {
         if (stateFile)
             unlink(stateFile);
@@ -201,6 +221,8 @@ storageDriverAutostart(void)
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("Failed to autostart storage pool '%s': %s"),
                                pool->def->name, virGetLastErrorMessage());
+                storagePoolSetInactive(&pool);
+                continue;
             } else {
                 pool->active = true;
             }
@@ -737,8 +759,7 @@ storagePoolCreateXML(virConnectPtr conn,
             unlink(stateFile);
         if (backend->stopPool)
             backend->stopPool(conn, pool);
-        virStoragePoolObjRemove(&driver->pools, pool);
-        pool = NULL;
+        storagePoolSetInactive(&pool);
         goto cleanup;
     }
 
@@ -1068,16 +1089,7 @@ storagePoolDestroy(virStoragePoolPtr obj)
                                             VIR_STORAGE_POOL_EVENT_STOPPED,
                                             0);
 
-    pool->active = false;
-
-    if (pool->configFile == NULL) {
-        virStoragePoolObjRemove(&driver->pools, pool);
-        pool = NULL;
-    } else if (pool->newDef) {
-        virStoragePoolDefFree(pool->def);
-        pool->def = pool->newDef;
-        pool->newDef = NULL;
-    }
+    storagePoolSetInactive(&pool);
 
     ret = 0;
 
@@ -1197,12 +1209,7 @@ storagePoolRefresh(virStoragePoolPtr obj,
                                                 pool->def->uuid,
                                                 VIR_STORAGE_POOL_EVENT_STOPPED,
                                                 0);
-        pool->active = false;
-
-        if (pool->configFile == NULL) {
-            virStoragePoolObjRemove(&driver->pools, pool);
-            pool = NULL;
-        }
+        storagePoolSetInactive(&pool);
         goto cleanup;
     }
 
