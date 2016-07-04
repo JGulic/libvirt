@@ -106,5 +106,97 @@ int                     virInterfaceChangeRollback(virConnectPtr conn,
 
 int virInterfaceIsActive(virInterfacePtr iface);
 
+/**
+ * VIR_INTERFACE_EVENT_CALLBACK:
+ *
+ * Used to cast the event specific callback into the generic one
+ * for use for virConnectInterfaceEventRegisterAny()
+ */
+# define VIR_INTERFACE_EVENT_CALLBACK(cb)((virConnectInterfaceEventGenericCallback)(cb))
+
+/**
+ * virInterfaceEventID:
+ *
+ * An enumeration of supported eventId parameters for
+ * virConnectInterfaceEventRegisterAny(). Each event id determines which
+ * signature of callback function will be used.
+ */
+typedef enum {
+    VIR_INTERFACE_EVENT_ID_LIFECYCLE = 0, /* virConnectInterfaceEventLifecycleCallback */
+
+# ifdef VIR_ENUM_SENTINELS
+    VIR_INTERFACE_EVENT_ID_LAST
+    /*
+     * NB: this enum value will increase over time as new events are
+     * added to the libvirt API. It reflects the last event ID supported
+     * by this version of the libvirt API.
+     */
+# endif
+} virInterfaceEventID;
+
+/**
+ * virConnectInterfaceEventGenericCallback:
+ * @conn: the connection pointer
+ * @iface: the interface pointer
+ * @opaque: application specified data
+ *
+ * A generic storage iface event callback handler, for use with
+ * virConnectInterfaceEventRegisterAny(). Specific events usually
+ * have a customization with extra parameters, often with @opaque being
+ * passed in a different parameter position; use
+ * VIR_INTERFACE_EVENT_CALLBACK() when registering an appropriate handler.
+ */
+typedef void (*virConnectInterfaceEventGenericCallback)(virConnectPtr conn,
+                                                        virInterfacePtr iface,
+                                                        void *opaque);
+
+/* Use VIR_INTERFACE_EVENT_CALLBACK() to cast the 'cb' parameter  */
+int virConnectInterfaceEventRegisterAny(virConnectPtr conn,
+                                        virInterfacePtr iface, /* optional, to filter */
+                                        int eventID,
+                                        virConnectInterfaceEventGenericCallback cb,
+                                        void *opaque,
+                                        virFreeCallback freecb);
+
+int virConnectInterfaceEventDeregisterAny(virConnectPtr conn,
+                                          int callbackID);
+
+/**
+ * virInterfaceEventLifecycleType:
+ *
+ * a virInterfaceEventLifecycleType is emitted during interface
+ * lifecycle events
+ */
+typedef enum {
+    VIR_INTERFACE_EVENT_DEFINED = 0,
+    VIR_INTERFACE_EVENT_UNDEFINED = 1,
+    VIR_INTERFACE_EVENT_STARTED = 2,
+    VIR_INTERFACE_EVENT_STOPPED = 3,
+
+# ifdef VIR_ENUM_SENTINELS
+    VIR_INTERFACE_EVENT_LAST
+# endif
+} virInterfaceEventLifecycleType;
+
+/**
+ * virConnectInterfaceEventLifecycleCallback:
+ * @conn: connection object
+ * @iface: interface on which the event occurred
+ * @event: The specific virInterfaceEventLifeCycleType which occurred
+ * @detail: contains some details on the reason of the event.
+ * @opaque: application specified data
+ *
+ * This callback is called when a interface lifecycle action is performed, like start
+ * or stop.
+ *
+ * The callback signature to use when registering for an event of type
+ * VIR_INTERFACE_EVENT_ID_LIFECYCLE with virConnectInterfaceEventRegisterAny()
+ */
+typedef void (*virConnectInterfaceEventLifecycleCallback)(virConnectPtr conn,
+                                                          virInterfacePtr iface,
+                                                          int event,
+                                                          int detail,
+                                                          void *opaque);
+
 
 #endif /* __VIR_LIBVIRT_INTERFACE_H__ */
