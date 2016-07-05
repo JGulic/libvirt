@@ -61,6 +61,14 @@ static const char storagePoolDef[] =
 "  </target>\n"
 "</pool>\n";
 
+static const char interfaceDef[] =
+"<interface type='ethernet' name='eth0'>"
+"  <mac address='aa:bb:cc:dd:ee:ff'/>"
+"  <protocol family='ipv4'>"
+"    <dhcp/>"
+"  </protocol>"
+"</interface>";
+
 typedef struct {
     int startEvents;
     int stopEvents;
@@ -83,6 +91,7 @@ typedef struct {
     virConnectPtr conn;
     virNetworkPtr net;
     virStoragePoolPtr pool;
+    virInterfacePtr iface;
 } objecteventTest;
 
 
@@ -161,6 +170,25 @@ storagePoolRefreshCb(virConnectPtr conn ATTRIBUTE_UNUSED,
     int *counter = opaque;
 
     (*counter)++;
+}
+
+static void
+interfaceLifecycleCb(virConnectPtr conn ATTRIBUTE_UNUSED,
+                     virInterfacePtr iface ATTRIBUTE_UNUSED,
+                     int event,
+                     int detail ATTRIBUTE_UNUSED,
+                     void* opaque)
+{
+    lifecycleEventCounter *counter = opaque;
+
+    if (event == VIR_INTERFACE_EVENT_STARTED)
+        counter->startEvents++;
+    else if (event == VIR_INTERFACE_EVENT_STOPPED)
+        counter->stopEvents++;
+    else if (event == VIR_INTERFACE_EVENT_DEFINED)
+        counter->defineEvents++;
+    else if (event == VIR_INTERFACE_EVENT_UNDEFINED)
+        counter->undefineEvents++;
 }
 
 static int
@@ -691,6 +719,130 @@ testStoragePoolStartStopEvent(const void *data)
     return ret;
 }
 
+/*
+static int
+testInterfaceCreateXML(const void *data)
+{
+    const objecteventTest *test = data;
+    lifecycleEventCounter counter;
+    virInterfacePtr iface;
+    int id;
+    int ret = 0;
+
+    lifecycleEventCounter_reset(&counter);
+
+    id = virConnectInterfaceEventRegisterAny(test->conn, NULL,
+                           VIR_INTERFACE_EVENT_ID_LIFECYCLE,
+                           VIR_INTERFACE_EVENT_CALLBACK(&interfaceLifecycleCb),
+                           &counter, NULL);
+    iface = virInterfaceCreate(interfaceDef, 0);
+
+    if (!iface || virEventRunDefaultImpl() < 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+    if (counter.startEvents != 1 || counter.unexpectedEvents > 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+ cleanup:
+    virConnectInterfaceEventDeregisterAny(test->conn, id);
+    if (iface) {
+        virInterfaceDestroy(iface, 0);
+        virInterfaceFree(iface);
+    }
+    return ret;
+}*/
+
+static int
+testInterfaceDefine(const void *data)
+{
+    const objecteventTest *test = data;
+    lifecycleEventCounter counter;
+    virInterfacePtr iface;
+    int id;
+    int ret = 0;
+
+    lifecycleEventCounter_reset(&counter);
+
+    id = virConnectInterfaceEventRegisterAny(test->conn, NULL,
+                           VIR_INTERFACE_EVENT_ID_LIFECYCLE,
+                           VIR_INTERFACE_EVENT_CALLBACK(&interfaceLifecycleCb),
+                           &counter, NULL);
+
+    /* Make sure the define event is triggered */
+    iface = virInterfaceDefineXML(test->conn, interfaceDef, 0);
+
+    if (!iface || virEventRunDefaultImpl() < 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+    if (counter.defineEvents != 1 || counter.unexpectedEvents > 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+    /* Make sure the undefine event is triggered */
+    virInterfaceUndefine(iface);
+
+    if (virEventRunDefaultImpl() < 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+    if (counter.undefineEvents != 1 || counter.unexpectedEvents > 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+
+ cleanup:
+    virConnectInterfaceEventDeregisterAny(test->conn, id);
+    if (iface)
+        virInterfaceFree(iface);
+
+    return ret;
+}
+
+static int
+testInterfaceStartStopEvent(const void *data)
+{
+    const objecteventTest *test = data;
+    lifecycleEventCounter counter;
+    int id;
+    int ret = 0;
+
+    if (!test->iface)
+        return -1;
+
+    lifecycleEventCounter_reset(&counter);
+
+    id = virConnectInterfaceEventRegisterAny(test->conn, test->iface,
+                           VIR_INTERFACE_EVENT_ID_LIFECYCLE,
+                           VIR_INTERFACE_EVENT_CALLBACK(&interfaceLifecycleCb),
+                           &counter, NULL);
+    virInterfaceCreate(test->iface, 0);
+    virInterfaceDestroy(test->iface, 0);
+
+    if (virEventRunDefaultImpl() < 0) {
+        ret = -1;
+        goto cleanup;
+    }
+
+    if (counter.startEvents != 1 || counter.stopEvents != 1 ||
+        counter.unexpectedEvents > 0) {
+        ret = -1;
+        goto cleanup;
+    }
+ cleanup:
+    virConnectInterfaceEventDeregisterAny(test->conn, id);
+
+    return ret;
+}
+
 static void
 timeout(int id ATTRIBUTE_UNUSED, void *opaque ATTRIBUTE_UNUSED)
 {
@@ -769,6 +921,26 @@ mymain(void)
     if (test.pool) {
         virStoragePoolUndefine(test.pool);
         virStoragePoolFree(test.pool);
+    }
+
+    /* Interface event tests */
+    /* Tests requiring the test interface not to be set up*/
+    /*
+    if (virTestRun("Interface createXML start event ", testInterfaceCreateXML, &test) < 0)
+        ret = EXIT_FAILURE;*/
+    if (virTestRun("Interface (un)define events", testInterfaceDefine, &test) < 0)
+        ret = EXIT_FAILURE;
+
+    /* Define a test interface */
+    if (!(test.iface = virInterfaceDefineXML(test.conn, interfaceDef, 0)))
+        ret = EXIT_FAILURE;
+    if (virTestRun("Interface start stop events ", testInterfaceStartStopEvent, &test) < 0)
+        ret = EXIT_FAILURE;
+
+    /* Cleanup */
+    if (test.iface) {
+        virInterfaceUndefine(test.iface);
+        virInterfaceFree(test.iface);
     }
 
     virConnectClose(test.conn);
