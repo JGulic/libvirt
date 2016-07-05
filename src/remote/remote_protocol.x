@@ -319,6 +319,7 @@ typedef remote_nonnull_nwfilter *remote_nwfilter;
 typedef remote_nonnull_storage_pool *remote_storage_pool;
 typedef remote_nonnull_storage_vol *remote_storage_vol;
 typedef remote_nonnull_node_device *remote_node_device;
+typedef remote_nonnull_interface *remote_interface;
 
 /* Error message. See <virterror.h> for explanation of fields. */
 
@@ -3131,6 +3132,26 @@ struct remote_storage_pool_event_refresh_msg {
     remote_nonnull_storage_pool pool;
 };
 
+struct remote_connect_interface_event_register_any_args {
+    int eventID;
+    remote_interface iface;
+};
+
+struct remote_connect_interface_event_register_any_ret {
+    int callbackID;
+};
+
+struct remote_connect_interface_event_deregister_any_args {
+    int callbackID;
+};
+
+struct remote_interface_event_lifecycle_msg {
+    int callbackID;
+    remote_nonnull_interface iface;
+    int event;
+    int detail;
+};
+
 struct remote_domain_fsfreeze_args {
     remote_nonnull_domain dom;
     remote_nonnull_string mountpoints<REMOTE_DOMAIN_FSFREEZE_MOUNTPOINTS_MAX>; /* (const char **) */
@@ -5882,5 +5903,26 @@ enum remote_procedure {
      * @generate: both
      * @acl: none
      */
-    REMOTE_PROC_STORAGE_POOL_EVENT_REFRESH = 373
+    REMOTE_PROC_STORAGE_POOL_EVENT_REFRESH = 373,
+
+    /**
+     * @generate: none
+     * @priority: high
+     * @acl: connect:search_interfaces
+     * @aclfilter: interface:getattr
+     */
+    REMOTE_PROC_CONNECT_INTERFACE_EVENT_REGISTER_ANY = 374,
+
+    /**
+     * @generate: none
+     * @priority: high
+     * @acl: connect:read
+     */
+    REMOTE_PROC_CONNECT_INTERFACE_EVENT_DEREGISTER_ANY = 375,
+
+    /**
+     * @generate: both
+     * @acl: none
+     */
+    REMOTE_PROC_INTERFACE_EVENT_LIFECYCLE = 376
 };
