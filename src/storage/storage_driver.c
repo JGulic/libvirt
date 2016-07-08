@@ -1835,6 +1835,7 @@ storageVolDelete(virStorageVolPtr obj,
     virStoragePoolObjPtr pool;
     virStorageBackendPtr backend;
     virStorageVolDefPtr vol = NULL;
+    virObjectEventPtr event = NULL;
     int ret = -1;
 
     if (!(vol = virStorageVolDefFromVol(obj, &pool, &backend)))
@@ -1857,12 +1858,17 @@ storageVolDelete(virStorageVolPtr obj,
         goto cleanup;
     }
 
+    event = virStoragePoolEventRefreshNew(pool->def->name,
+                                          pool->def->uuid);
+
     if (storageVolDeleteInternal(obj, backend, pool, vol, flags, true) < 0)
         goto cleanup;
 
     ret = 0;
 
  cleanup:
+    if (event)
+        virObjectEventStateQueue(driver->storageEventState, event);
     virStoragePoolObjUnlock(pool);
     return ret;
 }
@@ -1877,6 +1883,7 @@ storageVolCreateXML(virStoragePoolPtr obj,
     virStorageBackendPtr backend;
     virStorageVolDefPtr voldef = NULL;
     virStorageVolPtr ret = NULL, volobj = NULL;
+    virObjectEventPtr event = NULL;
 
     virCheckFlags(VIR_STORAGE_VOL_CREATE_PREALLOC_METADATA, NULL);
 
@@ -1995,6 +2002,9 @@ storageVolCreateXML(virStoragePoolPtr obj,
         pool->def->available -= voldef->target.allocation;
     }
 
+    event = virStoragePoolEventRefreshNew(pool->def->name,
+                                          pool->def->uuid);
+
     VIR_INFO("Creating volume '%s' in storage pool '%s'",
              volobj->name, pool->def->name);
     ret = volobj;
@@ -2004,6 +2014,8 @@ storageVolCreateXML(virStoragePoolPtr obj,
  cleanup:
     virObjectUnref(volobj);
     virStorageVolDefFree(voldef);
+    if (event)
+        virObjectEventStateQueue(driver->storageEventState, event);
     if (pool)
         virStoragePoolObjUnlock(pool);
     return ret;
