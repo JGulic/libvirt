@@ -51,6 +51,7 @@
 #include "storage_conf.h"
 #include "storage_event.h"
 #include "node_device_conf.h"
+#include "node_device_event.h"
 #include "virxml.h"
 #include "virthread.h"
 #include "virlog.h"
@@ -503,6 +504,7 @@ static const char *defaultPoolSourcesNetFSXML =
 "    <format type='nfs'/>\n"
 "  </source>\n"
 "</sources>\n";
+
 
 static const unsigned long long defaultPoolCap = (100 * 1024 * 1024 * 1024ull);
 static const unsigned long long defaultPoolAlloc;
@@ -5427,6 +5429,7 @@ testNodeDeviceCreateXML(virConnectPtr conn,
     int parent_host = -1;
     virNodeDevicePtr dev = NULL;
     virNodeDevCapsDefPtr caps;
+    virObjectEventPtr event = NULL;
 
     virCheckFlags(0, NULL);
 
@@ -5470,11 +5473,16 @@ testNodeDeviceCreateXML(virConnectPtr conn,
         goto cleanup;
     virNodeDeviceObjUnlock(obj);
 
+    event = virNodeDeviceEventLifecycleNew(def->name,
+                                           VIR_NODE_DEVICE_EVENT_CREATED,
+                                           0);
+
     dev = virGetNodeDevice(conn, def->name);
     def = NULL;
  cleanup:
     testDriverUnlock(driver);
     virNodeDeviceDefFree(def);
+    testObjectEventQueue(driver, event);
     VIR_FREE(wwnn);
     VIR_FREE(wwpn);
     return dev;
@@ -5488,6 +5496,7 @@ testNodeDeviceDestroy(virNodeDevicePtr dev)
     virNodeDeviceObjPtr obj = NULL;
     char *parent_name = NULL, *wwnn = NULL, *wwpn = NULL;
     int parent_host = -1;
+    virObjectEventPtr event = NULL;
 
     testDriverLock(driver);
     obj = virNodeDeviceFindByName(&driver->devs, dev->name);
@@ -5521,12 +5530,17 @@ testNodeDeviceDestroy(virNodeDevicePtr dev)
         goto out;
     }
 
+    event = virNodeDeviceEventLifecycleNew(dev->name,
+                                           VIR_NODE_DEVICE_EVENT_DELETED,
+                                           0);
+
     virNodeDeviceObjLock(obj);
     virNodeDeviceObjRemove(&driver->devs, obj);
 
  out:
     if (obj)
         virNodeDeviceObjUnlock(obj);
+    testObjectEventQueue(driver, event);
     VIR_FREE(parent_name);
     VIR_FREE(wwnn);
     VIR_FREE(wwpn);
@@ -5656,6 +5670,39 @@ testConnectStoragePoolEventRegisterAny(virConnectPtr conn,
 static int
 testConnectStoragePoolEventDeregisterAny(virConnectPtr conn,
                                          int callbackID)
+{
+    testDriverPtr driver = conn->privateData;
+    int ret = 0;
+
+    if (virObjectEventStateDeregisterID(conn, driver->eventState,
+                                        callbackID) < 0)
+        ret = -1;
+
+    return ret;
+}
+
+static int
+testConnectNodeDeviceEventRegisterAny(virConnectPtr conn,
+                                      virNodeDevicePtr dev,
+                                      int eventID,
+                                      virConnectNodeDeviceEventGenericCallback callback,
+                                      void *opaque,
+                                      virFreeCallback freecb)
+{
+    testDriverPtr driver = conn->privateData;
+    int ret;
+
+    if (virNodeDeviceEventStateRegisterID(conn, driver->eventState,
+                                          dev, eventID, callback,
+                                          opaque, freecb, &ret) < 0)
+        ret = -1;
+
+    return ret;
+}
+
+static int
+testConnectNodeDeviceEventDeregisterAny(virConnectPtr conn,
+                                        int callbackID)
 {
     testDriverPtr driver = conn->privateData;
     int ret = 0;
@@ -6809,6 +6856,8 @@ static virStorageDriver testStorageDriver = {
 };
 
 static virNodeDeviceDriver testNodeDeviceDriver = {
+    .connectNodeDeviceEventRegisterAny = testConnectNodeDeviceEventRegisterAny, /* 2.1.0 */
+    .connectNodeDeviceEventDeregisterAny = testConnectNodeDeviceEventDeregisterAny, /* 2.1.0 */
     .nodeNumOfDevices = testNodeNumOfDevices, /* 0.7.2 */
     .nodeListDevices = testNodeListDevices, /* 0.7.2 */
     .nodeDeviceLookupByName = testNodeDeviceLookupByName, /* 0.7.2 */
