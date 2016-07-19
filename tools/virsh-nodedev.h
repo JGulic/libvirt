@@ -28,6 +28,16 @@
 
 # include "virsh.h"
 
+virNodeDevicePtr
+virshCommandOptNodeDeviceBy(vshControl *ctl, const vshCmd *cmd,
+                            const char **name, unsigned int flags);
+
+/* default is lookup by Name */
+# define virshCommandOptNodeDevice(_ctl, _cmd, _name)                    \
+    virshCommandOptNodeDeviceBy(_ctl, _cmd, _name,                       \
+                                VIRSH_BYNAME)
+
+
 extern const vshCmdDef nodedevCmds[];
 
 #endif /* VIRSH_NODEDEV_H */
