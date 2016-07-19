@@ -28,6 +28,7 @@
 
 #include "dirname.h"
 #include "node_device_conf.h"
+#include "node_device_event.h"
 #include "node_device_driver.h"
 #include "node_device_linux_sysfs.h"
 #include "node_device_udev.h"
@@ -1024,6 +1025,7 @@ static int udevGetDeviceDetails(struct udev_device *device,
 static int udevRemoveOneDevice(struct udev_device *device)
 {
     virNodeDeviceObjPtr dev = NULL;
+    virObjectEventPtr event = NULL;
     const char *name = NULL;
     int ret = 0;
 
@@ -1031,15 +1033,24 @@ static int udevRemoveOneDevice(struct udev_device *device)
     dev = virNodeDeviceFindBySysfsPath(&driver->devs, name);
 
     if (dev != NULL) {
+        event = virNodeDeviceEventLifecycleNew(dev->def->name,
+                                               VIR_NODE_DEVICE_EVENT_DELETED,
+                                               0);
+
         VIR_DEBUG("Removing device '%s' with sysfs path '%s'",
                   dev->def->name, name);
         virNodeDeviceObjRemove(&driver->devs, dev);
+        goto cleanup;
     } else {
         VIR_DEBUG("Failed to find device to remove that has udev name '%s'",
                   name);
         ret = -1;
+        goto cleanup;
     }
 
+ cleanup:
+    if (event)
+        virObjectEventStateQueue(driver->nodeDeviceEventState, event);
     return ret;
 }
 
@@ -1096,6 +1107,7 @@ static int udevAddOneDevice(struct udev_device *device)
 {
     virNodeDeviceDefPtr def = NULL;
     virNodeDeviceObjPtr dev = NULL;
+    virObjectEventPtr event = NULL;
     int ret = -1;
 
     if (VIR_ALLOC(def) != 0)
@@ -1125,11 +1137,18 @@ static int udevAddOneDevice(struct udev_device *device)
     if (dev == NULL)
         goto cleanup;
 
+    event = virNodeDeviceEventLifecycleNew(dev->def->name,
+                                           VIR_NODE_DEVICE_EVENT_CREATED,
+                                           0);
+
     virNodeDeviceObjUnlock(dev);
 
     ret = 0;
 
  cleanup:
+    if (event)
+        virObjectEventStateQueue(driver->nodeDeviceEventState, event);
+
     if (ret != 0) {
         VIR_DEBUG("Discarding device %d %p %s", ret, def,
                   def ? NULLSTR(def->sysfs_path) : "");
@@ -1240,6 +1259,8 @@ static int nodeStateCleanup(void)
         return -1;
 
     nodeDeviceLock();
+
+    virObjectEventStateFree(driver->nodeDeviceEventState);
 
     priv = driver->privateData;
 
@@ -1456,6 +1477,7 @@ static int nodeStateInitialize(bool privileged,
 
     driver->privateData = priv;
     nodeDeviceLock();
+    driver->nodeDeviceEventState = virObjectEventStateNew();
 
     if (udevPCITranslateInit(privileged) < 0)
         goto cleanup;
@@ -1526,6 +1548,8 @@ static virNodeDeviceDriver udevNodeDeviceDriver = {
     .nodeNumOfDevices = nodeNumOfDevices, /* 0.7.3 */
     .nodeListDevices = nodeListDevices, /* 0.7.3 */
     .connectListAllNodeDevices = nodeConnectListAllNodeDevices, /* 0.10.2 */
+    .connectNodeDeviceEventRegisterAny = nodeConnectNodeDeviceEventRegisterAny, /* 2.1.0 */
+    .connectNodeDeviceEventDeregisterAny = nodeConnectNodeDeviceEventDeregisterAny, /* 2.1.0 */
     .nodeDeviceLookupByName = nodeDeviceLookupByName, /* 0.7.3 */
     .nodeDeviceLookupSCSIHostByWWN = nodeDeviceLookupSCSIHostByWWN, /* 1.0.2 */
     .nodeDeviceGetXMLDesc = nodeDeviceGetXMLDesc, /* 0.7.3 */
