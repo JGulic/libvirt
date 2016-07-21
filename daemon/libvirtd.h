@@ -64,6 +64,8 @@ struct daemonClientPrivate {
     size_t nstorageEventCallbacks;
     daemonClientEventCallbackPtr *nodeDeviceEventCallbacks;
     size_t nnodeDeviceEventCallbacks;
+    daemonClientEventCallbackPtr *interfaceEventCallbacks;
+    size_t ninterfaceEventCallbacks;
     bool closeRegistered;
 
 # if WITH_SASL
