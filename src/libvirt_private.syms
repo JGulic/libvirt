@@ -581,6 +581,11 @@ virInterfaceObjUnlock;
 virInterfaceRemove;
 
 
+# conf/interface_event.h
+virInterfaceEventLifecycleNew;
+virInterfaceEventStateRegisterID;
+
+
 # conf/netdev_bandwidth_conf.h
 virDomainClearNetBandwidth;
 virNetDevBandwidthFormat;
