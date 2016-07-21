@@ -834,3 +834,129 @@ virInterfaceIsActive(virInterfacePtr iface)
     virDispatchError(iface->conn);
     return -1;
 }
+
+
+/**
+ * virConnectInterfaceEventRegisterAny:
+ * @conn: pointer to the connection
+ * @iface: pointer to the interface
+ * @eventID: the event type to receive
+ * @cb: callback to the function handling interface events
+ * @opaque: opaque data to pass on to the callback
+ * @freecb: optional function to deallocate opaque when not used anymore
+ *
+ * Adds a callback to receive notifications of arbitrary interface events
+ * occurring on a interface.  This function requires that an event loop
+ * has been previously registered with virEventRegisterImpl() or
+ * virEventRegisterDefaultImpl().
+ *
+ * If @iface is NULL, then events will be monitored for any interface. If @iface
+ * is non-NULL, then only the specific interface will be monitored.
+ *
+ * Most types of event have a callback providing a custom set of parameters
+ * for the event. When registering an event, it is thus necessary to use
+ * the VIR_INTERFACE_EVENT_CALLBACK() macro to cast the supplied function pointer
+ * to match the signature of this method.
+ *
+ * The virInterfacePtr object handle passed into the callback upon delivery
+ * of an event is only valid for the duration of execution of the callback.
+ * If the callback wishes to keep the interface object after the callback
+ * returns, it shall take a reference to it, by calling virInterfaceRef().
+ * The reference can be released once the object is no longer required
+ * by calling virInterfaceFree().
+ *
+ * The return value from this method is a positive integer identifier
+ * for the callback. To unregister a callback, this callback ID should
+ * be passed to the virConnectInterfaceEventDeregisterAny() method.
+ *
+ * Returns a callback identifier on success, -1 on failure.
+ */
+int
+virConnectInterfaceEventRegisterAny(virConnectPtr conn,
+                                    virInterfacePtr iface,
+                                    int eventID,
+                                    virConnectInterfaceEventGenericCallback cb,
+                                    void *opaque,
+                                    virFreeCallback freecb)
+{
+    VIR_DEBUG("conn=%p, interface=%p, eventID=%d, cb=%p, opaque=%p, freecb=%p",
+              conn, iface, eventID, cb, opaque, freecb);
+
+    virResetLastError();
+
+    virCheckConnectReturn(conn, -1);
+    if (iface) {
+        virCheckInterfaceGoto(iface, error);
+        if (iface->conn != conn) {
+            virReportInvalidArg(iface,
+                                _("interface '%s' in %s must match connection"),
+                                iface->name, __FUNCTION__);
+            goto error;
+        }
+    }
+    virCheckNonNullArgGoto(cb, error);
+    virCheckNonNegativeArgGoto(eventID, error);
+
+    if (eventID >= VIR_INTERFACE_EVENT_ID_LAST) {
+        virReportInvalidArg(eventID,
+                            _("eventID in %s must be less than %d"),
+                            __FUNCTION__, VIR_INTERFACE_EVENT_ID_LAST);
+        goto error;
+    }
+
+    if (conn->interfaceDriver && conn->interfaceDriver->connectInterfaceEventRegisterAny) {
+        int ret;
+        ret = conn->interfaceDriver->connectInterfaceEventRegisterAny(conn,
+                                                                      iface,
+                                                                      eventID,
+                                                                      cb,
+                                                                      opaque,
+                                                                      freecb);
+        if (ret < 0)
+            goto error;
+        return ret;
+    }
+
+    virReportUnsupportedError();
+ error:
+    virDispatchError(conn);
+    return -1;
+}
+
+
+/**
+ * virConnectInterfaceEventDeregisterAny:
+ * @conn: pointer to the connection
+ * @callbackID: the callback identifier
+ *
+ * Removes an event callback. The callbackID parameter should be the
+ * value obtained from a previous virConnectInterfaceEventRegisterAny() method.
+ *
+ * Returns 0 on success, -1 on failure
+ */
+int
+virConnectInterfaceEventDeregisterAny(virConnectPtr conn,
+                                      int callbackID)
+{
+    VIR_DEBUG("conn=%p, callbackID=%d", conn, callbackID);
+
+    virResetLastError();
+
+    virCheckConnectReturn(conn, -1);
+    virCheckNonNegativeArgGoto(callbackID, error);
+
+    if (conn->interfaceDriver &&
+        conn->interfaceDriver->connectInterfaceEventDeregisterAny) {
+        int ret;
+        ret = conn->interfaceDriver->connectInterfaceEventDeregisterAny(conn,
+                                                                        callbackID);
+        if (ret < 0)
+            goto error;
+        return ret;
+    }
+
+    virReportUnsupportedError();
+ error:
+    virDispatchError(conn);
+    return -1;
+}

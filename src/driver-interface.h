@@ -46,6 +46,18 @@ typedef int
                                   virInterfacePtr **ifaces,
                                   unsigned int flags);
 
+typedef int
+(*virDrvConnectInterfaceEventRegisterAny)(virConnectPtr conn,
+                                          virInterfacePtr iface,
+                                          int eventID,
+                                          virConnectInterfaceEventGenericCallback cb,
+                                          void *opaque,
+                                          virFreeCallback freecb);
+
+typedef int
+(*virDrvConnectInterfaceEventDeregisterAny)(virConnectPtr conn,
+                                            int callbackID);
+
 typedef virInterfacePtr
 (*virDrvInterfaceLookupByName)(virConnectPtr conn,
                                const char *name);
@@ -105,6 +117,8 @@ struct _virInterfaceDriver {
     virDrvConnectNumOfDefinedInterfaces connectNumOfDefinedInterfaces;
     virDrvConnectListDefinedInterfaces connectListDefinedInterfaces;
     virDrvConnectListAllInterfaces connectListAllInterfaces;
+    virDrvConnectInterfaceEventRegisterAny connectInterfaceEventRegisterAny;
+    virDrvConnectInterfaceEventDeregisterAny connectInterfaceEventDeregisterAny;
     virDrvInterfaceLookupByName interfaceLookupByName;
     virDrvInterfaceLookupByMACString interfaceLookupByMACString;
     virDrvInterfaceGetXMLDesc interfaceGetXMLDesc;

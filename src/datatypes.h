@@ -129,6 +129,19 @@ extern virClassPtr virAdmClientClass;
         }                                                               \
     } while (0)
 
+# define virCheckInterfaceGoto(obj, label) 				\
+    do {								\
+        virInterfacePtr _iface = (obj);    				\
+        if (!virObjectIsClass(_iface, virInterfaceClass) ||		\
+            !virObjectIsClass(_iface->conn, virConnectClass)) {    	\
+            virReportErrorHelper(VIR_FROM_INTERFACE,			\
+                                 VIR_ERR_INVALID_INTERFACE,		\
+                                 __FILE__, __FUNCTION__, __LINE__,	\
+                                 __FUNCTION__);    			\
+            goto label;    						\
+        }								\
+    } while (0)
+
 # define virCheckStoragePoolReturn(obj, retval)                         \
     do {                                                                \
         virStoragePoolPtr _pool = (obj);                                \
