@@ -43,6 +43,7 @@
 #include "viralloc.h"
 #include "network_conf.h"
 #include "interface_conf.h"
+#include "interface_event.h"
 #include "domain_conf.h"
 #include "domain_event.h"
 #include "network_event.h"
@@ -3719,6 +3720,7 @@ static virInterfacePtr testInterfaceDefineXML(virConnectPtr conn, const char *xm
     virInterfaceDefPtr def;
     virInterfaceObjPtr iface = NULL;
     virInterfacePtr ret = NULL;
+    virObjectEventPtr event = NULL;
 
     virCheckFlags(0, NULL);
 
@@ -3730,10 +3732,15 @@ static virInterfacePtr testInterfaceDefineXML(virConnectPtr conn, const char *xm
         goto cleanup;
     def = NULL;
 
+    event = virInterfaceEventLifecycleNew(iface->def->name,
+                                          VIR_INTERFACE_EVENT_DEFINED,
+                                          0);
+
     ret = virGetInterface(conn, iface->def->name, iface->def->mac);
 
  cleanup:
     virInterfaceDefFree(def);
+    testObjectEventQueue(privconn, event);
     if (iface)
         virInterfaceObjUnlock(iface);
     testDriverUnlock(privconn);
@@ -3744,6 +3751,7 @@ static int testInterfaceUndefine(virInterfacePtr iface)
 {
     testDriverPtr privconn = iface->conn->privateData;
     virInterfaceObjPtr privinterface;
+    virObjectEventPtr event = NULL;
     int ret = -1;
 
     testDriverLock(privconn);
@@ -3755,11 +3763,16 @@ static int testInterfaceUndefine(virInterfacePtr iface)
         goto cleanup;
     }
 
+    event = virInterfaceEventLifecycleNew(iface->name,
+                                          VIR_INTERFACE_EVENT_UNDEFINED,
+                                          0);
+
     virInterfaceRemove(&privconn->ifaces,
                        privinterface);
     ret = 0;
 
  cleanup:
+    testObjectEventQueue(privconn, event);
     testDriverUnlock(privconn);
     return ret;
 }
@@ -3769,6 +3782,7 @@ static int testInterfaceCreate(virInterfacePtr iface,
 {
     testDriverPtr privconn = iface->conn->privateData;
     virInterfaceObjPtr privinterface;
+    virObjectEventPtr event = NULL;
     int ret = -1;
 
     virCheckFlags(0, -1);
@@ -3788,9 +3802,14 @@ static int testInterfaceCreate(virInterfacePtr iface,
     }
 
     privinterface->active = 1;
+
+    event = virInterfaceEventLifecycleNew(iface->name,
+                                          VIR_INTERFACE_EVENT_STARTED,
+                                          0);
     ret = 0;
 
  cleanup:
+    testObjectEventQueue(privconn, event);
     if (privinterface)
         virInterfaceObjUnlock(privinterface);
     testDriverUnlock(privconn);
@@ -3802,6 +3821,7 @@ static int testInterfaceDestroy(virInterfacePtr iface,
 {
     testDriverPtr privconn = iface->conn->privateData;
     virInterfaceObjPtr privinterface;
+    virObjectEventPtr event = NULL;
     int ret = -1;
 
     virCheckFlags(0, -1);
@@ -3821,9 +3841,15 @@ static int testInterfaceDestroy(virInterfacePtr iface,
     }
 
     privinterface->active = 0;
+
+    event = virInterfaceEventLifecycleNew(iface->name,
+                                          VIR_INTERFACE_EVENT_STOPPED,
+                                          0);
+
     ret = 0;
 
  cleanup:
+    testObjectEventQueue(privconn, event);
     if (privinterface)
         virInterfaceObjUnlock(privinterface);
     testDriverUnlock(privconn);
@@ -5713,6 +5739,39 @@ testConnectNodeDeviceEventDeregisterAny(virConnectPtr conn,
     return ret;
 }
 
+static int
+testConnectInterfaceEventRegisterAny(virConnectPtr conn,
+                                     virInterfacePtr iface,
+                                     int eventID,
+                                     virConnectInterfaceEventGenericCallback callback,
+                                     void *opaque,
+                                     virFreeCallback freecb)
+{
+    testDriverPtr driver = conn->privateData;
+    int ret;
+
+    if (virInterfaceEventStateRegisterID(conn, driver->eventState,
+                                         iface, eventID, callback,
+                                         opaque, freecb, &ret) < 0)
+        ret = -1;
+
+    return ret;
+}
+
+static int
+testConnectInterfaceEventDeregisterAny(virConnectPtr conn,
+                                       int callbackID)
+{
+    testDriverPtr driver = conn->privateData;
+    int ret = 0;
+
+    if (virObjectEventStateDeregisterID(conn, driver->eventState,
+                                        callbackID) < 0)
+        ret = -1;
+
+    return ret;
+}
+
 static int testConnectListAllDomains(virConnectPtr conn,
                                      virDomainPtr **domains,
                                      unsigned int flags)
@@ -6799,6 +6858,8 @@ static virInterfaceDriver testInterfaceDriver = {
     .connectListInterfaces = testConnectListInterfaces, /* 0.7.0 */
     .connectNumOfDefinedInterfaces = testConnectNumOfDefinedInterfaces, /* 0.7.0 */
     .connectListDefinedInterfaces = testConnectListDefinedInterfaces, /* 0.7.0 */
+    .connectInterfaceEventRegisterAny = testConnectInterfaceEventRegisterAny, /* 2.1.0 */
+    .connectInterfaceEventDeregisterAny = testConnectInterfaceEventDeregisterAny, /* 2.1.0 */
     .interfaceLookupByName = testInterfaceLookupByName, /* 0.7.0 */
     .interfaceLookupByMACString = testInterfaceLookupByMACString, /* 0.7.0 */
     .interfaceGetXMLDesc = testInterfaceGetXMLDesc, /* 0.7.0 */
