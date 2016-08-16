@@ -33,6 +33,7 @@
 #include "virlog.h"
 #include "datatypes.h"
 #include "domain_event.h"
+#include "interface_event.h"
 #include "network_event.h"
 #include "storage_event.h"
 #include "node_device_event.h"
@@ -380,6 +381,11 @@ remoteNodeDeviceBuildEventUpdate(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
                                  void *evdata, void *opaque);
 
 static void
+remoteInterfaceBuildEventLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
+                                   virNetClientPtr client ATTRIBUTE_UNUSED,
+                                   void *evdata, void *opaque);
+
+static void
 remoteConnectNotifyEventConnectionClosed(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
                                          virNetClientPtr client ATTRIBUTE_UNUSED,
                                          void *evdata, void *opaque);
@@ -574,6 +580,10 @@ static virNetClientProgramEvent remoteEvents[] = {
       remoteNodeDeviceBuildEventUpdate,
       sizeof(remote_node_device_event_update_msg),
       (xdrproc_t)xdr_remote_node_device_event_update_msg },
+    { REMOTE_PROC_INTERFACE_EVENT_LIFECYCLE,
+      remoteInterfaceBuildEventLifecycle,
+      sizeof(remote_interface_event_lifecycle_msg),
+      (xdrproc_t)xdr_remote_interface_event_lifecycle_msg },
 };
 
 static void
@@ -3265,6 +3275,101 @@ remoteConnectNodeDeviceEventDeregisterAny(virConnectPtr conn,
 
 
 static int
+remoteConnectInterfaceEventRegisterAny(virConnectPtr conn,
+                                       virInterfacePtr iface,
+                                       int eventID,
+                                       virConnectInterfaceEventGenericCallback callback,
+                                       void *opaque,
+                                       virFreeCallback freecb)
+{
+    int rv = -1;
+    struct private_data *priv = conn->privateData;
+    remote_connect_interface_event_register_any_args args;
+    remote_connect_interface_event_register_any_ret ret;
+    int callbackID;
+    int count;
+    remote_nonnull_interface interface;
+
+    remoteDriverLock(priv);
+
+    if ((count = virInterfaceEventStateRegisterClient(conn, priv->eventState,
+                                                      iface, eventID, callback,
+                                                      opaque, freecb,
+                                                      &callbackID)) < 0)
+        goto done;
+
+    /* If this is the first callback for this eventID, we need to enable
+     * events on the server */
+    if (count == 1) {
+        args.eventID = eventID;
+        if (iface) {
+            make_nonnull_interface(&interface, iface);
+            args.iface = &interface;
+        } else {
+            args.iface = NULL;
+        }
+
+        memset(&ret, 0, sizeof(ret));
+        if (call(conn, priv, 0, REMOTE_PROC_CONNECT_INTERFACE_EVENT_REGISTER_ANY,
+                 (xdrproc_t) xdr_remote_connect_interface_event_register_any_args, (char *) &args,
+                 (xdrproc_t) xdr_remote_connect_interface_event_register_any_ret, (char *) &ret) == -1) {
+            virObjectEventStateDeregisterID(conn, priv->eventState,
+                                            callbackID);
+            goto done;
+        }
+        virObjectEventStateSetRemote(conn, priv->eventState, callbackID,
+                                     ret.callbackID);
+    }
+
+    rv = callbackID;
+
+ done:
+    remoteDriverUnlock(priv);
+    return rv;
+}
+
+
+static int
+remoteConnectInterfaceEventDeregisterAny(virConnectPtr conn,
+                                         int callbackID)
+{
+    struct private_data *priv = conn->privateData;
+    int rv = -1;
+    remote_connect_interface_event_deregister_any_args args;
+    int eventID;
+    int remoteID;
+    int count;
+
+    remoteDriverLock(priv);
+
+    if ((eventID = virObjectEventStateEventID(conn, priv->eventState,
+                                              callbackID, &remoteID)) < 0)
+        goto done;
+
+    if ((count = virObjectEventStateDeregisterID(conn, priv->eventState,
+                                                 callbackID)) < 0)
+        goto done;
+
+    /* If that was the last callback for this eventID, we need to disable
+     * events on the server */
+    if (count == 0) {
+        args.callbackID = remoteID;
+
+        if (call(conn, priv, 0, REMOTE_PROC_CONNECT_INTERFACE_EVENT_DEREGISTER_ANY,
+                 (xdrproc_t) xdr_remote_connect_interface_event_deregister_any_args, (char *) &args,
+                 (xdrproc_t) xdr_void, (char *) NULL) == -1)
+            goto done;
+    }
+
+    rv = 0;
+
+ done:
+    remoteDriverUnlock(priv);
+    return rv;
+}
+
+
+static int
 remoteConnectDomainQemuMonitorEventRegister(virConnectPtr conn,
                                             virDomainPtr dom,
                                             const char *event,
@@ -5311,6 +5416,28 @@ remoteNodeDeviceBuildEventUpdate(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
 
     event = virNodeDeviceEventUpdateNew(dev->name);
     virObjectUnref(dev);
+
+    remoteEventQueue(priv, event, msg->callbackID);
+}
+
+static void
+remoteInterfaceBuildEventLifecycle(virNetClientProgramPtr prog ATTRIBUTE_UNUSED,
+                                   virNetClientPtr client ATTRIBUTE_UNUSED,
+                                   void *evdata, void *opaque)
+{
+    virConnectPtr conn = opaque;
+    struct private_data *priv = conn->privateData;
+    remote_interface_event_lifecycle_msg *msg = evdata;
+    virInterfacePtr iface;
+    virObjectEventPtr event = NULL;
+
+    iface = get_nonnull_interface(conn, msg->iface);
+    if (!iface)
+        return;
+
+    event = virInterfaceEventLifecycleNew(iface->name, msg->event,
+                                          msg->detail);
+    virObjectUnref(iface);
 
     remoteEventQueue(priv, event, msg->callbackID);
 }
@@ -8197,6 +8324,8 @@ static virInterfaceDriver interface_driver = {
     .connectNumOfDefinedInterfaces = remoteConnectNumOfDefinedInterfaces, /* 0.7.2 */
     .connectListDefinedInterfaces = remoteConnectListDefinedInterfaces, /* 0.7.2 */
     .connectListAllInterfaces = remoteConnectListAllInterfaces, /* 0.10.2 */
+    .connectInterfaceEventDeregisterAny = remoteConnectInterfaceEventDeregisterAny, /* 2.2.0 */
+    .connectInterfaceEventRegisterAny = remoteConnectInterfaceEventRegisterAny, /* 2.2.0 */
     .interfaceLookupByName = remoteInterfaceLookupByName, /* 0.7.2 */
     .interfaceLookupByMACString = remoteInterfaceLookupByMACString, /* 0.7.2 */
     .interfaceGetXMLDesc = remoteInterfaceGetXMLDesc, /* 0.7.2 */

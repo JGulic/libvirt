@@ -236,6 +236,33 @@ remoteRelayNodeDeviceEventCheckACL(virNetServerClientPtr client,
 }
 
 static bool
+remoteRelayInterfaceEventCheckACL(virNetServerClientPtr client,
+                                  virConnectPtr conn,
+                                  virInterfacePtr iface)
+{
+    virInterfaceDef def;
+    virIdentityPtr identity = NULL;
+    bool ret = false;
+
+    /* For now, we just create a virInterfaceDef with enough contents to
+     * satisfy what viraccessdriverpolkit.c references.  This is a bit
+     * fragile, but I don't know of anything better.  */
+    def.name = iface->name;
+    def.mac = NULL;
+
+    if (!(identity = virNetServerClientGetIdentity(client)))
+        goto cleanup;
+    if (virIdentitySetCurrent(identity) < 0)
+        goto cleanup;
+    ret = virConnectInterfaceEventRegisterAnyCheckACL(conn, &def);
+
+ cleanup:
+    ignore_value(virIdentitySetCurrent(NULL));
+    virObjectUnref(identity);
+    return ret;
+}
+
+static bool
 remoteRelayDomainQemuMonitorEventCheckACL(virNetServerClientPtr client,
                                           virConnectPtr conn, virDomainPtr dom)
 {
@@ -1423,6 +1450,43 @@ static virConnectNodeDeviceEventGenericCallback nodeDeviceEventCallbacks[] = {
 
 verify(ARRAY_CARDINALITY(nodeDeviceEventCallbacks) == VIR_NODE_DEVICE_EVENT_ID_LAST);
 
+static int
+remoteRelayInterfaceEventLifecycle(virConnectPtr conn,
+                                   virInterfacePtr iface,
+                                   int event,
+                                   int detail,
+                                   void *opaque)
+{
+    daemonClientEventCallbackPtr callback = opaque;
+    remote_interface_event_lifecycle_msg data;
+
+    if (callback->callbackID < 0 ||
+        !remoteRelayInterfaceEventCheckACL(callback->client, conn, iface))
+        return -1;
+
+    VIR_DEBUG("Relaying interface lifecycle event %d, detail %d, callback %d",
+              event, detail, callback->callbackID);
+
+    /* build return data */
+    memset(&data, 0, sizeof(data));
+    make_nonnull_interface(&data.iface, iface);
+    data.callbackID = callback->callbackID;
+    data.event = event;
+    data.detail = detail;
+
+    remoteDispatchObjectEventSend(callback->client, remoteProgram,
+                                  REMOTE_PROC_INTERFACE_EVENT_LIFECYCLE,
+                                  (xdrproc_t)xdr_remote_interface_event_lifecycle_msg, &data);
+
+    return 0;
+}
+
+static virConnectInterfaceEventGenericCallback interfaceEventCallbacks[] = {
+    VIR_INTERFACE_EVENT_CALLBACK(remoteRelayInterfaceEventLifecycle),
+};
+
+verify(ARRAY_CARDINALITY(interfaceEventCallbacks) == VIR_INTERFACE_EVENT_ID_LAST);
+
 static void
 remoteRelayDomainQemuMonitorEvent(virConnectPtr conn,
                                   virDomainPtr dom,
@@ -1559,6 +1623,21 @@ void remoteClientFreeFunc(void *data)
                 VIR_WARN("unexpected node device event deregister failure");
         }
         VIR_FREE(priv->nodeDeviceEventCallbacks);
+
+        for (i = 0; i < priv->ninterfaceEventCallbacks; i++) {
+            int callbackID = priv->interfaceEventCallbacks[i]->callbackID;
+            if (callbackID < 0) {
+                VIR_WARN("unexpected incomplete interface callback %zu", i);
+                continue;
+            }
+            VIR_DEBUG("Deregistering remote interface event relay %d",
+                      callbackID);
+            priv->interfaceEventCallbacks[i]->callbackID = -1;
+            if (virConnectInterfaceEventDeregisterAny(priv->conn,
+                                                      callbackID) < 0)
+                VIR_WARN("unexpected interface event deregister failure");
+        }
+        VIR_FREE(priv->interfaceEventCallbacks);
 
         for (i = 0; i < priv->nqemuEventCallbacks; i++) {
             int callbackID = priv->qemuEventCallbacks[i]->callbackID;
@@ -5891,6 +5970,129 @@ remoteDispatchConnectNodeDeviceEventDeregisterAny(virNetServerPtr server ATTRIBU
     virMutexUnlock(&priv->lock);
     return rv;
 }
+
+
+static int
+remoteDispatchConnectInterfaceEventRegisterAny(virNetServerPtr server ATTRIBUTE_UNUSED,
+                                               virNetServerClientPtr client,
+                                               virNetMessagePtr msg ATTRIBUTE_UNUSED,
+                                               virNetMessageErrorPtr rerr ATTRIBUTE_UNUSED,
+                                               remote_connect_interface_event_register_any_args *args,
+                                               remote_connect_interface_event_register_any_ret *ret)
+{
+    int callbackID;
+    int rv = -1;
+    daemonClientEventCallbackPtr callback = NULL;
+    daemonClientEventCallbackPtr ref;
+    struct daemonClientPrivate *priv =
+        virNetServerClientGetPrivateData(client);
+    virInterfacePtr iface = NULL;
+
+    if (!priv->conn) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("connection not open"));
+        goto cleanup;
+    }
+
+    virMutexLock(&priv->lock);
+
+    if (args->iface &&
+        !(iface = get_nonnull_interface(priv->conn, *args->iface)))
+        goto cleanup;
+
+    if (args->eventID >= VIR_INTERFACE_EVENT_ID_LAST || args->eventID < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("unsupported network event ID %d"), args->eventID);
+        goto cleanup;
+    }
+
+    /* If we call register first, we could append a complete callback
+     * to our array, but on OOM append failure, we'd have to then hope
+     * deregister works to undo our register.  So instead we append an
+     * incomplete callback to our array, then register, then fix up
+     * our callback; but since VIR_APPEND_ELEMENT clears 'callback' on
+     * success, we use 'ref' to save a copy of the pointer.  */
+    if (VIR_ALLOC(callback) < 0)
+        goto cleanup;
+    callback->client = client;
+    callback->eventID = args->eventID;
+    callback->callbackID = -1;
+    ref = callback;
+    if (VIR_APPEND_ELEMENT(priv->interfaceEventCallbacks,
+                           priv->ninterfaceEventCallbacks,
+                           callback) < 0)
+        goto cleanup;
+    if ((callbackID = virConnectInterfaceEventRegisterAny(priv->conn,
+                                                          iface,
+                                                          args->eventID,
+                                                          interfaceEventCallbacks[args->eventID],
+                                                          ref,
+                                                          remoteEventCallbackFree)) < 0) {
+        VIR_SHRINK_N(priv->interfaceEventCallbacks,
+                     priv->ninterfaceEventCallbacks, 1);
+        callback = ref;
+        goto cleanup;
+    }
+
+    ref->callbackID = callbackID;
+    ret->callbackID = callbackID;
+
+    rv = 0;
+
+ cleanup:
+    VIR_FREE(callback);
+    if (rv < 0)
+        virNetMessageSaveError(rerr);
+    virObjectUnref(iface);
+    virMutexUnlock(&priv->lock);
+    return rv;
+}
+
+
+static int
+remoteDispatchConnectInterfaceEventDeregisterAny(virNetServerPtr server ATTRIBUTE_UNUSED,
+                                                 virNetServerClientPtr client,
+                                                 virNetMessagePtr msg ATTRIBUTE_UNUSED,
+                                                 virNetMessageErrorPtr rerr ATTRIBUTE_UNUSED,
+                                                 remote_connect_interface_event_deregister_any_args *args)
+{
+    int rv = -1;
+    size_t i;
+    struct daemonClientPrivate *priv =
+        virNetServerClientGetPrivateData(client);
+
+    if (!priv->conn) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("connection not open"));
+        goto cleanup;
+    }
+
+    virMutexLock(&priv->lock);
+
+    for (i = 0; i < priv->ninterfaceEventCallbacks; i++) {
+        if (priv->interfaceEventCallbacks[i]->callbackID == args->callbackID)
+            break;
+    }
+    if (i == priv->ninterfaceEventCallbacks) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("interface event callback %d not registered"),
+                       args->callbackID);
+        goto cleanup;
+    }
+
+    if (virConnectInterfaceEventDeregisterAny(priv->conn, args->callbackID) < 0)
+        goto cleanup;
+
+    VIR_DELETE_ELEMENT(priv->interfaceEventCallbacks, i,
+                       priv->ninterfaceEventCallbacks);
+
+    rv = 0;
+
+ cleanup:
+    if (rv < 0)
+        virNetMessageSaveError(rerr);
+    virMutexUnlock(&priv->lock);
+    return rv;
+}
+
 
 static int
 qemuDispatchConnectDomainMonitorEventRegister(virNetServerPtr server ATTRIBUTE_UNUSED,
